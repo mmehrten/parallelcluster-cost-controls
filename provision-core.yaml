@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Provision automation Lambda functions for managing HPC workloads."
+Parameters:
+  ApproverARN:
+    Type: String
+    Description: "The IAM ARN for the SSM approver group."
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: "The S3 bucket used to deploy lambda source code."
+
+
+Resources:
+  # Budget Update Lambda
+  BudgetUpdateLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: src/hpc_adjust_budget_handler.zip
+      Description: Update an existing budget.
+      Handler: hpc_adjust_budget_handler.lambda_handler
+      MemorySize: 256
+      Role: !GetAtt BudgetUpdateLambdaRole.Arn
+      Runtime: python3.8
+      Timeout: 300
+
+  BudgetUpdateLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - budgets:*
+                Resource: !Sub arn:${AWS::Partition}:budgets::${AWS::AccountId}:budget/*
+
+        # Write to CloudWatch
+        - PolicyName: LambdaLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutDestination
+                  - logs:PutLogEvents
+                Resource:
+                  !Join
+                    - ''
+                    - - 'arn:aws:logs:'
+                      - !Ref AWS::Region
+                      - ':'
+                      - !Ref AWS::AccountId
+                      - ':log-group:*'
+
+  # Deprovision PCluster Lambda
+  DeprovisionClusterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: src/hpc_pause_cluster_handler.zip
+      Description: Terminate cluster on full overages.
+      Handler: hpc_pause_cluster_handler.lambda_handler
+      MemorySize: 256
+      Role: !GetAtt DeprovisionClusterLambdaRole.Arn
+      Runtime: python3.8
+      Timeout: 300
+
+  DeprovisionClusterLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+        # Write to CloudWatch
+        - PolicyName: LambdaLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutDestination
+                  - logs:PutLogEvents
+                Resource:
+                  !Join
+                    - ''
+                    - - 'arn:aws:logs:'
+                      - !Ref AWS::Region
+                      - ':'
+                      - !Ref AWS::AccountId
+                      - ':log-group:*'
+
+  DeprovisionFunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref DeprovisionClusterLambda
+      Principal: sns.amazonaws.com   
+
+  # ProvisionPClusterLambda Invocation
+  ProvisionPClusterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: src/hpc_provision_cluster_handler.zip
+      Description: Provision a PCluster cluster.
+      Handler: hpc_provision_cluster_handler.lambda_handler
+      MemorySize: 256
+      Role: !GetAtt ProvisionPClusterRole.Arn
+      Runtime: python3.8
+      Timeout: 300
+
+  ProvisionPClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+        # Write to CloudWatch
+        - PolicyName: LambdaLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutDestination
+                  - logs:PutLogEvents
+                Resource:
+                  !Join
+                    - ''
+                    - - 'arn:aws:logs:'
+                      - !Ref AWS::Region
+                      - ':'
+                      - !Ref AWS::AccountId
+                      - ':log-group:*'
+
+        # Invoke CF
+        - PolicyName: CloudFormation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                Resource: "*"
+
+  ProvisionFunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref ProvisionPClusterLambda
+      Principal: sns.amazonaws.com   
+
+  CreateClusterSSM:
+    Type: AWS::SSM::Document
+    Properties:
+      Content:
+        schemaVersion: '0.3'
+        description: 'Submit a request to provision an HPC cluster'
+        parameters:
+          ClusterSize:
+            type: String
+            description: Cluster size (number of EC2 instances)
+            default: "1"
+          BudgetAmount:
+            type: String
+            description: "The required budget for the cluster."
+            default: "10000"
+          HeadNodeType:
+            type: String
+            description: "Type of EC2 instance to use in the head node."
+            default: t2.small
+          WorkerNodeType:
+            type: String
+            description: "Type of EC2 instance to use in the workers."
+            default: c5.2xlarge
+          HeadNodeSubnetId:
+            type: String
+            description: "Subnet for the head node"
+          WorkerNodeSubnetId:
+            type: String
+            description: "Subnet for the worker nodes"
+          EC2KeyPairName:
+            type: String
+            description: "EC2 Key Pair to use for cluster"
+          RequestorEmail:
+            type: String
+            description: "Email address of the requestor"
+          RequestorDivision:
+            type: String
+            description: "The company / organization division of the requestor."
+          Purpose:
+            type: String
+            description: "Cluster purpose."
+          AdminEmail:
+            type: String
+            description: "Admin email for notifications"
+          ClusterName: 
+            type: String
+            description: "What to call the cluster"
+                  
+        mainSteps:
+        - action: aws:approve
+          name: Approval
+          inputs:
+            Approvers: 
+              - !Ref ApproverARN
+          description: This cluster provisioning and budget must be approved by an admin before initiating.
+          nextStep: ProvisionCluster
+        - action: 'aws:invokeLambdaFunction'
+          name: ProvisionCluster
+          inputs:
+            InvocationType: RequestResponse
+            FunctionName: provisionpcluster
+            Payload: '{"head_node_instance_type": "{{ HeadNodeType }}", "head_node_subnet_id": "{{ HeadNodeSubnetId }}", "worker_node_instance_type": "{{ WorkerNodeType }}", "worker_node_subnet_id": "{{ WorkerNodeSubnetId }}", "ec2_key_pair_name": "{{ EC2KeyPairName }}", "worker_node_min_count": "1", "worker_node_max_count": "{{ClusterSize}}", "budget_name": "{{ ClusterName }}", "budget_amount": "{{ BudgetAmount }}", "requestor_email": "{{ RequestorEmail }}",  "requestor_division": "{{ RequestorDivision }}",  "purpose": "{{ Purpose }}", "admin_email": "{{ AdminEmail }}", "cluster_name": "{{ ClusterName }}"}'
+          description: Create the cluster after approval..
+
+      DocumentType: Automation
+      Name: 'Create-HPC-Cluster'
+      UpdateMethod: NewVersion
+  ResizeClusterSSM:
+    Type: AWS::SSM::Document
+    Properties:
+      Content:
+        schemaVersion: '0.3'
+        description: 'Request an increase to an HPC cluster budget'
+        parameters:
+          Budget:
+            type: String
+            description: "(Required) Name of the budget."
+          BudgetID:
+            type: String
+            description: "(Required) ID of the budget"
+                  
+        mainSteps:
+        - action: aws:approve
+          name: Approval
+          inputs:
+            Approvers: 
+              - !Ref ApproverARN
+          description: This budget increase must be approved by an admin before initiating.
+          nextStep: IncreaseBudget
+        - action: 'aws:invokeLambdaFunction'
+          name: IncreaseBudget
+          inputs:
+            FunctionName: hpc_adjust_budget_handler
+            Payload: '{"budget": "{{ Budget }}", "budget_id": "{{ BudgetID }}"}'
+          description: Increase the budget.
+
+      DocumentType: Automation
+      Name: 'Increase-HPC-Cluster'
+      UpdateMethod: NewVersion
+        
+    
+
+
+

@@ -1,0 +1,118 @@
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Provision a research project with ParallelCluster, AWS Budget, alerting, and auto-shutdown."
+Parameters:
+  BudgetAmount:
+    Type: Integer
+  RequestorEmail:
+    Type: String
+  RequestorDivision:
+    Type: String
+  Purpose:
+    Type: String
+  AdminEmail:
+    Type: String
+
+Resources:
+  # Budget
+  Budget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub Team ${RequestorDivision} (${RequestorEmail} - ${Purpose})
+        BudgetLimit:
+          Amount: !Ref BudgetAmount
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          Tag: 
+            - RequestorEmail: !Ref RequestorEmail
+            - RequestorDivision: !Ref RequestorDivision
+            - Purpose: !Ref Purpose
+        CostTypes:
+          IncludeCredit: False            
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref RequestorEmail
+            - SubscriptionType: SNS
+              Address: !Ref Budget50SNSTopic
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 75
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref RequestorEmail
+            - SubscriptionType: SNS
+              Address: !Ref Budget75SNSTopic
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 90
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref RequestorEmail
+            - SubscriptionType: EMAIL
+              Address: !Ref AdminEmail   
+            - SubscriptionType: SNS
+              Address: !Ref Budget90SNSTopic
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 95
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref RequestorEmail
+            - SubscriptionType: EMAIL
+              Address: !Ref AdminEmail
+            - SubscriptionType: SNS
+              Address: !Ref BudgetOver90SNSTopic
+        
+  # Budget SNS Topics
+  Budget50SNSTopic:
+    Type: AWS::SNS::Topic
+    TopicName: Budget50
+    Subscription:
+      Endpoint: !Ref RequestorEmail
+      Protocol: email
+
+  Budget75SNSTopic:
+    Type: AWS::SNS::Topic
+    TopicName: Budget75
+    Subscription:
+      Endpoint: !Ref RequestorEmail
+      Protocol: email
+
+  Budget90SNSTopic:
+    Type: AWS::SNS::Topic
+    TopicName: Budget90
+    Subscription:
+      - Endpoint: !Ref RequestorEmail
+        Protocol: email
+      - Protocol: lambda
+        Endpoint: !Join
+          - 'arn:aws:lambda:'
+          - !Ref AWS::Region
+          - ':'
+          - !Ref AWS::AccountId
+          - ':function:hpc_pause_cluster_handler'
+
+  BudgetOver90SNSTopic:
+    Type: AWS::SNS::Topic
+    TopicName: BudgetOver90
+    Subscription:
+      - Endpoint: !Ref RequestorEmail
+        Protocol: email
+      - Protocol: lambda
+        Endpoint: !Join
+          - 'arn:aws:lambda:'
+          - !Ref AWS::Region
+          - ':'
+          - !Ref AWS::AccountId
+          - ':function:hpc_pause_cluster_handler'
