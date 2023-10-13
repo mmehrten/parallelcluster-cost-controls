@@ -7,18 +7,21 @@ Parameters:
   LambdaCodeS3Bucket:
     Type: String
     Description: "The S3 bucket used to deploy lambda source code."
-
+  ParallelClusterAPIEndpoint:
+    Type: String
+    Description: "API Endpoint for ParallelCluster API deployment"
 
 Resources:
   # Budget Update Lambda
   BudgetUpdateLambda:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: hpc_adjust_budget_handler
       Code:
         S3Bucket: !Ref LambdaCodeS3Bucket
         S3Key: src/hpc_adjust_budget_handler.zip
       Description: Update an existing budget.
-      Handler: hpc_adjust_budget_handler.lambda_handler
+      Handler: lambda_handler.lambda_handler
       MemorySize: 256
       Role: !GetAtt BudgetUpdateLambdaRole.Arn
       Runtime: python3.8
@@ -27,6 +30,7 @@ Resources:
   BudgetUpdateLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: hpc_adjust_budget_handler
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -71,19 +75,24 @@ Resources:
   DeprovisionClusterLambda:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: hpc_pause_cluster_handler
       Code:
         S3Bucket: !Ref LambdaCodeS3Bucket
         S3Key: src/hpc_pause_cluster_handler.zip
       Description: Terminate cluster on full overages.
-      Handler: hpc_pause_cluster_handler.lambda_handler
+      Handler: lambda_handler.lambda_handler
       MemorySize: 256
       Role: !GetAtt DeprovisionClusterLambdaRole.Arn
       Runtime: python3.8
       Timeout: 300
+      Environment:
+        Variables:
+          API_ENDPOINT: !Ref ParallelClusterAPIEndpoint
 
   DeprovisionClusterLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: hpc_pause_cluster_handler
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -126,19 +135,24 @@ Resources:
   ProvisionPClusterLambda:
     Type: AWS::Lambda::Function
     Properties:
+      FunctionName: hpc_provision_cluster_handler
       Code:
         S3Bucket: !Ref LambdaCodeS3Bucket
         S3Key: src/hpc_provision_cluster_handler.zip
       Description: Provision a PCluster cluster.
-      Handler: hpc_provision_cluster_handler.lambda_handler
+      Handler: lambda_handler.lambda_handler
       MemorySize: 256
       Role: !GetAtt ProvisionPClusterRole.Arn
       Runtime: python3.8
       Timeout: 300
+      Environment:
+        Variables:
+          API_ENDPOINT: !Ref ParallelClusterAPIEndpoint
 
   ProvisionPClusterRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: hpc_provision_cluster_handler
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -247,7 +261,7 @@ Resources:
           name: ProvisionCluster
           inputs:
             InvocationType: RequestResponse
-            FunctionName: provisionpcluster
+            FunctionName: hpc_provision_cluster_handler
             Payload: '{"head_node_instance_type": "{{ HeadNodeType }}", "head_node_subnet_id": "{{ HeadNodeSubnetId }}", "worker_node_instance_type": "{{ WorkerNodeType }}", "worker_node_subnet_id": "{{ WorkerNodeSubnetId }}", "ec2_key_pair_name": "{{ EC2KeyPairName }}", "worker_node_min_count": "1", "worker_node_max_count": "{{ClusterSize}}", "budget_name": "{{ ClusterName }}", "budget_amount": "{{ BudgetAmount }}", "requestor_email": "{{ RequestorEmail }}",  "requestor_division": "{{ RequestorDivision }}",  "purpose": "{{ Purpose }}", "admin_email": "{{ AdminEmail }}", "cluster_name": "{{ ClusterName }}"}'
           description: Create the cluster after approval..
 

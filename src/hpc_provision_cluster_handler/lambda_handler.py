@@ -1,47 +1,89 @@
 import json
 import os
+import time
 import traceback
 
+import botocore.session
 import urllib3
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 http = urllib3.PoolManager()
 PCLUSTER_CONFIG = """
 Image:
   Os: alinux2
 HeadNode:
-  InstanceType: {{ head_node_instance_type }}
+  InstanceType: {head_node_instance_type}
   Networking:
-    SubnetId: {{ head_node_subnet_id }}
+    SubnetId: {head_node_subnet_id}
     ElasticIp: true
   Ssh:
-    KeyName: {{ ec2_key_pair_name }}
+    KeyName: {ec2_key_pair_name}
 Scheduling:
   Scheduler: slurm
   SlurmQueues:
     - Name: queue
       Networking:
         SubnetIds:
-          - {{ worker_node_subnet_id }}
+          - {worker_node_subnet_id}
       ComputeResources:
         - Name: compute-resource
-          InstanceType: {{ worker_node_instance_type }}
-          MinCount: {{ worker_node_min_count}}
-          MaxCount: {{ worker_node_max_count}}
+          InstanceType: {worker_node_instance_type}
+          MinCount: {worker_node_min_count}
+          MaxCount: {worker_node_max_count}
           SpotPrice: 1.1
           DisableSimultaneousMultithreading: true
 Tags:
   - Key: requestor_email
-    Value: {{ requestor_email }}
+    Value: {requestor_email}
   - Key: requestor_division
-    Value: {{ requestor_division }}
+    Value: {requestor_division}
   - Key: purpose
-    Value: {{ purpose }}
+    Value: {purpose}
   - Key: admin_email
-    Value: {{ admin_email }}
+    Value: {admin_email}
 """
 API_KEY = os.environ.get("API_KEY")
 API_ENDPOINT = os.environ.get("API_ENDPOINT")
-BASE_URL = f"https://{API_ENDPOINT}/prod/v3/clusters"
+BASE_URL = f"{API_ENDPOINT}/v3/clusters"
+REGION = os.environ["AWS_REGION"]
+
+
+def _request(url, method, body, headers):
+    encoded_body = json.dumps(body)
+    session = botocore.session.Session()
+    sigv4 = SigV4Auth(session.get_credentials(), "execute-api", REGION)
+    request = AWSRequest(
+        method=method,
+        url=url,
+        data=encoded_body,
+        headers=headers,
+    )
+    request.context["payload_signing_enabled"] = True
+    sigv4.add_auth(request)
+
+    prepped = request.prepare()
+    print(prepped)
+
+    r = http.request(
+        method=method,
+        url=prepped.url,
+        body=encoded_body,
+        headers=prepped.headers,
+        timeout=urllib3.util.Timeout(120),
+    )
+    print(
+        json.dumps(
+            {
+                "event": "http_request",
+                "response_code": r.status,
+                "response": r.data.decode('utf-8'),
+            }
+        )
+    )
+    if r.status > 299:
+        raise RuntimeError(f"{r.status}: {r.data.decode('utf-8')}")
+    return r
 
 
 def lambda_handler(event, context):
@@ -51,14 +93,20 @@ def lambda_handler(event, context):
             "clusterConfiguration": PCLUSTER_CONFIG.format(**event),
             "region": "us-east-1",
         }
-        encoded_body = json.dumps(body).encode("utf-8")
-        r = http.request(
-            method="POST",
+        r = _request(
             url=BASE_URL,
-            body=encoded_body,
-            headers={"X-Api-Key": API_KEY, "Content-Type": "application/json"},
-            timeout=urllib3.util.Timeout(120),
+            method="POST",
+            body=body,
+            headers={"Content-Type": "application/json"},
         )
+        while r.status != 200:
+            r = _request(
+                url=f"{BASE_URL}/{event['cluster_name']}",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            time.sleep(3)
         # TODO - Invoke CloudFormation build BudgetName = ClusterName, BudgetAmount
         return {"status": "Success", "response": r.data}
     except Exception as e:

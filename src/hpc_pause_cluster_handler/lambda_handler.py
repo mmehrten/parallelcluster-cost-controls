@@ -8,8 +8,8 @@ http = urllib3.PoolManager()
 
 API_KEY = os.environ.get("API_KEY")
 API_ENDPOINT = os.environ.get("API_ENDPOINT")
-BASE_URL = f"https://{API_ENDPOINT}/prod/v3/clusters"
-REGION = os.environ['AWS_REGION']
+BASE_URL = f"{API_ENDPOINT}/v3/clusters"
+REGION = os.environ["AWS_REGION"]
 
 
 def lambda_handler(event, context):
@@ -28,6 +28,8 @@ def lambda_handler(event, context):
             headers={"X-Api-Key": API_KEY, "Content-Type": "application/json"},
             timeout=urllib3.util.Timeout(120),
         )
+        if r.status > 299:
+            raise RuntimeError(f"{r.status}: {r.data.decode('utf-8')}")
         return {"status": "Success", "response": r.data}
     except Exception as e:
         tb = traceback.format_exc()
