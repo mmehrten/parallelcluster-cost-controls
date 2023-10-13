@@ -61,9 +61,7 @@ def _request(url, method, body, headers):
     )
     request.context["payload_signing_enabled"] = True
     sigv4.add_auth(request)
-
     prepped = request.prepare()
-    print(prepped)
 
     r = http.request(
         method=method,
@@ -77,7 +75,7 @@ def _request(url, method, body, headers):
             {
                 "event": "http_request",
                 "response_code": r.status,
-                "response": r.data.decode('utf-8'),
+                "response": r.data.decode("utf-8"),
             }
         )
     )
@@ -99,16 +97,31 @@ def lambda_handler(event, context):
             body=body,
             headers={"Content-Type": "application/json"},
         )
-        while r.status != 200:
+        data = json.loads(r.data)
+        # Wait up to a minute for the cluster to finish creating - progressing >30 seconds in the
+        # deployment will generally mean we don't have any configuration errors
+        slept = 0
+        while (
+            r.status != 200
+            or data["cloudFormationStackStatus"]
+            not in (
+                "CREATE_COMPLETE",
+                "FAILED",
+                "ROLLBACK_COMPLETE",
+                "ROLLBACK_IN_PROGRESS",
+            )
+        ) and slept < 60:
             r = _request(
                 url=f"{BASE_URL}/{event['cluster_name']}",
-                method="POST",
+                method="GET",
                 body=body,
                 headers={"Content-Type": "application/json"},
             )
+            data = json.loads(r.data)
             time.sleep(3)
+            slept += 3
         # TODO - Invoke CloudFormation build BudgetName = ClusterName, BudgetAmount
-        return {"status": "Success", "response": r.data}
+        return {"status": "Success", "response": json.loads(r.data)}
     except Exception as e:
         tb = traceback.format_exc()
         raise RuntimeError(
